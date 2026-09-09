@@ -1789,12 +1789,36 @@ def template_journal():
 # ------------------------------------------------------------------
 if __name__ == "__main__":
     import logging
-    from logging.handlers import RotatingFileHandler
+    # وضع الترقية: شغّل  "نظام المحاسبة المتكامل.exe --upgrade"  أو  python app.py --upgrade
+    if "--upgrade" in sys.argv:
+        msg = []
+        try:
+            db.create_backup(prefix="pre-upgrade")
+            msg.append("[1/2] تم حفظ نسخة أمان قبل الترقية.")
+        except Exception as exc:
+            msg.append(f"[1/2] تعذّر حفظ نسخة الأمان: {exc}")
+        try:
+            db.init_db()
+            db.set_setting("db_version", "2.0")
+            msg.append("[2/2] تمت ترقية قاعدة البيانات بنجاح.")
+        except Exception as exc:
+            msg.append(f"[2/2] فشلت ترقية القاعدة: {exc}")
+        txt = "\n".join(msg)
+        try:
+            INSTANCE_DIR = db.INSTANCE_DIR
+            INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+            with open(INSTANCE_DIR / "upgrade_result.txt", "w", encoding="utf-8") as _f:
+                _f.write(txt + "\n")
+        except Exception:
+            pass
+        print(txt)
+        sys.exit(0)
 
     db.init_db()
     db.auto_monthly_backup()
 
     # تسجيل الأحداث في ملف بدل الشاشة (للتشغيل بدون نافذة CMD)
+    from logging.handlers import RotatingFileHandler
     INSTANCE_DIR = db.INSTANCE_DIR
     _handler = RotatingFileHandler(
         INSTANCE_DIR / "server.log", maxBytes=1_000_000,
