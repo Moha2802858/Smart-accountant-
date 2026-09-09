@@ -94,7 +94,7 @@ def _sanitize_dict(d):
 
 @app.before_request
 def before():
-    allowed = {"login", "static"}
+    allowed = {"login", "forgot", "static"}
     if request.endpoint in allowed:
         return None
     uid = session.get("uid")
@@ -193,6 +193,58 @@ def logout():
     return redirect(url_for("login"))
 
 
+@app.route("/forgot", methods=["GET", "POST"])
+def forgot():
+    """استعادة كلمة المرور عبر سؤال الأمان (يُعرض سؤال المستخدم فقط بعد كتابة اسمه)."""
+    error = None
+    ok = None
+    step = "ask"  # ask → answer → done
+    question = ""
+    username_in = request.form.get("username", "")
+    if request.method == "POST":
+        ip = request.remote_addr or "0.0.0.0"
+        if not _check_rate_limit(ip):
+            error = "محاولات كثيرة، يرجى الانتظار 5 دقائق"
+        else:
+            username = _sanitize(request.form.get("username", "")).strip()
+            user = db.query_one("SELECT * FROM users WHERE username=?", (username,)) if username else None
+            if not user:
+                _record_login_attempt(ip)
+                error = "لا يوجد مستخدم بهذا الاسم"
+            elif request.form.get("act") == "setup":
+                new_pass = request.form.get("new_password", "")
+                if len(new_pass) < 8:
+                    error = "كلمة المرور الجديدة 8 أحرف على الأقل"
+                elif not re.search(r'[A-Za-z]', new_pass) or not re.search(r'\d', new_pass):
+                    error = "كلمة المرور يجب أن تحتوي على حروف وأرقام"
+                elif not user["security_question"]:
+                    error = "هذا الحساب لا يوجد له سؤال أمان — تواصل مع مدير النظام"
+                else:
+                    answer = request.form.get("answer", "").strip()
+                    if user["security_answer_hash"] and check_password_hash(user["security_answer_hash"], answer):
+                        db.execute("UPDATE users SET password_hash=? WHERE id=?",
+                                   (generate_password_hash(new_pass), user["id"]))
+                        db.audit(user["full_name"], "استعادة كلمة مرور",
+                                 "تم تغيير كلمة المرور عبر سؤال الأمان")
+                        ok = "تم تغيير كلمة المرور بنجاح — يمكنك الآن تسجيل الدخول"
+                        step = "done"
+                    else:
+                        _record_login_attempt(ip)
+                        error = "إجابة سؤال الأمان غير صحيحة"
+                        if user["security_question"]:
+                            question = user["security_question"]
+                            step = "answer"
+            else:
+                if user["security_question"]:
+                    question = user["security_question"]
+                    step = "answer"
+                else:
+                    _record_login_attempt(ip)
+                    error = "هذا الحساب لا يوجد له سؤال أمان — تواصل مع مدير النظام"
+    return render_template("forgot.html", error=error, ok=ok, step=step,
+                           question=question, username=username_in)
+
+
 # ------------------------------------------------------------------
 # الصفحات
 # ------------------------------------------------------------------
@@ -235,7 +287,7 @@ def budget_page():
 @app.route("/users")
 @admin_required
 def users_page():
-    users = db.query("SELECT id, username, full_name, role, created_at FROM users ORDER BY id")
+    users = db.query("SELECT id, username, full_name, role, security_question, created_at FROM users ORDER BY id")
     return render_template("users.html", users=users)
 
 
@@ -1296,11 +1348,41 @@ def api_users_create():
         return jsonify(error="كلمة المرور يجب أن تحتوي على حروف وأرقام"), 400
     if db.query_one("SELECT id FROM users WHERE username=?", (username,)):
         return jsonify(error="اسم المستخدم موجود بالفعل"), 400
+    security_question = _sanitize((d.get("security_question") or "").strip())
+    security_answer_hash = ""
+    answer = d.get("security_answer") or ""
+    if security_question:
+        if not answer.strip():
+            return jsonify(error="اكتب إجابة سؤال الأمان"), 400
+        security_answer_hash = generate_password_hash(answer.strip())
     db.execute(
-        "INSERT INTO users (username, password_hash, full_name, role) VALUES (?,?,?,?)",
-        (username, generate_password_hash(password), full_name, role),
+        "INSERT INTO users (username, password_hash, full_name, role, security_question, security_answer_hash) VALUES (?,?,?,?,?,?)",
+        (username, generate_password_hash(password), full_name, role,
+         security_question, security_answer_hash),
     )
     db.audit(g.user["full_name"], "إضافة مستخدم", f"{username} ({ROLES[role]})")
+    return jsonify(ok=True)
+
+
+@app.route("/api/users/<int:uid>/security", methods=["POST"])
+@admin_required
+def api_users_security(uid):
+    """تحديث سؤال الأمان وإجابته لمستخدم (يستخدمه المدير من صفحة المستخدمين)."""
+    d = request.json or {}
+    u = db.query_one("SELECT * FROM users WHERE id=?", (uid,))
+    if not u:
+        return jsonify(error="المستخدم غير موجود"), 404
+    security_question = _sanitize((d.get("security_question") or "").strip())
+    if not security_question:
+        return jsonify(error="اكتب سؤال الأمان"), 400
+    answer = (d.get("security_answer") or "").strip()
+    if not answer:
+        return jsonify(error="اكتب إجابة سؤال الأمان"), 400
+    db.execute(
+        "UPDATE users SET security_question=?, security_answer_hash=? WHERE id=?",
+        (security_question, generate_password_hash(answer), uid),
+    )
+    db.audit(g.user["full_name"], "تحديث سؤال أمان", u["username"])
     return jsonify(ok=True)
 
 
@@ -1496,6 +1578,35 @@ def api_backup_restore(name):
         return jsonify(error=f"فشل الاستعادة: {e}"), 500
     db.audit(g.user["full_name"], "استعادة نسخة احتياطية", name)
     return jsonify(ok=True, message="تمت الاستعادة بنجاح — أعد تسجيل الدخول")
+
+
+@app.route("/api/restore-file", methods=["POST"])
+@admin_required
+def api_backup_restore_file():
+    """استعادة من ملف .db يختاره المستخدم من جهازه (يُحفظ كنسخة ثم يُستعاد)."""
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify(error="اختر ملف النسخة الاحتياطية أولًا"), 400
+    data = f.read()
+    if len(data) < 20 or data[:16] != b"SQLite format 3\x00":
+        return jsonify(error="الملف غير صالح — ليس ملف قاعدة بيانات SQLite"), 400
+    db.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    ts = db.datetime_now().strftime("%Y-%m-%d_%H%M%S")
+    dest = db.BACKUP_DIR / f"manual-upload-{ts}.db"
+    dest.write_bytes(data)
+    try:
+        pre = db.restore_backup(dest.name)
+    except Exception as e:
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        return jsonify(error=f"فشل الاستعادة من الملف: {e}"), 500
+    db.audit(g.user["full_name"], "استعادة نسخة من ملف مرفوع", dest.name)
+    msg = "تمت الاستعادة من الملف بنجاح — أعد تسجيل الدخول"
+    if pre:
+        msg += f" (حُفظت نسخة أمان قبل الاستعادة: {pre})"
+    return jsonify(ok=True, message=msg)
 
 
 # ------------------------------------------------------------------

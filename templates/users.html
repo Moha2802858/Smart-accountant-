@@ -10,7 +10,7 @@
   </div>
   <div class="tbl-wrap">
     <table class="tbl">
-      <thead><tr><th>الاسم</th><th class="num">اسم الدخول</th><th>الصلاحية</th><th class="num">تاريخ الإضافة</th><th class="num">إجراءات</th></tr></thead>
+      <thead><tr><th>الاسم</th><th class="num">اسم الدخول</th><th>الصلاحية</th><th>سؤال الأمان</th><th class="num">تاريخ الإضافة</th><th class="num">إجراءات</th></tr></thead>
       <tbody>
         {% for u in users %}
         <tr>
@@ -19,9 +19,12 @@
           <td>{% if u.role == 'admin' %}<span class="badge posted">مدير النظام</span>
               {% elif u.role == 'accountant' %}<span class="badge region">محاسب</span>
               {% else %}<span class="badge gray">مشاهدة فقط</span>{% endif %}</td>
+          <td>{% if u.security_question %}<span class="badge posted" title="{{ u.security_question }}">مُفعّل</span>
+              {% else %}<span class="badge draft">بدون سؤال</span>{% endif %}</td>
           <td class="num">{{ u.created_at }}</td>
           <td class="num">
-            <button class="btn btn-sm btn-dark" onclick="resetPw({{ u.id }}, '{{ u.username }}')">🔑 كلمة مرور</button>
+            <button class="btn btn-sm btn-dark" onclick="setSecurity({{ u.id }}, '{{ u.username }}', '{{ u.security_question }}')">🛡️ سؤال أمان</button>
+            <button class="btn btn-sm btn-teal" onclick="resetPw({{ u.id }}, '{{ u.username }}')">🔑 كلمة مرور</button>
             {% if u.id != user.id %}
             <button class="btn btn-sm btn-red" onclick="delUser({{ u.id }}, '{{ u.username }}')">🗑️</button>
             {% endif %}
@@ -32,7 +35,8 @@
     </table>
   </div>
   <div class="panel-body hint">
-    💡 باقي أعضاء الفريق يفتحون السيستم من أجهزتهم عبر متصفح الإنترنت على عنوان: <b style="color:var(--gold);direction:ltr;display:inline-block">http://IP-الجهاز-الرئيسي:5000</b>
+    💡 سؤال الأمان يُفعّل «نسيت كلمة المرور؟» لصاحب الحساب حتى يستعيد دخوله بنفسه عند نسيان كلمة المرور.
+    <br>💡 باقي أعضاء الفريق يفتحون السيستم من أجهزتهم عبر متصفح الإنترنت على عنوان: <b style="color:var(--gold);direction:ltr;display:inline-block">http://IP-الجهاز-الرئيسي:5000</b>
   </div>
 </div>
 
@@ -44,6 +48,8 @@
       <div class="field"><label>الاسم الكامل *</label><input id="u-name" type="text"></div>
       <div class="field"><label>اسم الدخول *</label><input id="u-user" type="text" placeholder="بالإنجليزية"></div>
       <div class="field"><label>كلمة المرور *</label><input id="u-pass" type="text"></div>
+      <div class="field"><label>سؤال الأمان (اختياري — لتفعيل «نسيت كلمة المرور؟»)</label><input id="u-q" type="text" placeholder="مثال: اسم مدرستك الثانوية؟"></div>
+      <div class="field"><label>إجابة سؤال الأمان (اختياري)</label><input id="u-ans" type="text"></div>
       <div class="field"><label>الصلاحية</label>
         <select id="u-role">
           <option value="accountant">محاسب (كل الصلاحيات المحاسبية)</option>
@@ -53,6 +59,22 @@
     </div>
     <div class="modal-foot">
       <button class="btn btn-gold" onclick="addUser()">حفظ</button>
+      <button class="btn btn-dark" data-close-modal>إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<!-- مودال سؤال الأمان -->
+<div class="modal-overlay" id="secModal">
+  <div class="modal">
+    <div class="modal-head"><h3 id="sec-title">سؤال الأمان</h3><button class="modal-close" data-close-modal>×</button></div>
+    <div class="modal-body">
+      <input type="hidden" id="sec-id">
+      <div class="field"><label>سؤال الأمان</label><input id="sec-q" type="text" placeholder="مثال: اسم مدرستك الثانوية؟"></div>
+      <div class="field"><label>إجابة سؤال الأمان</label><input id="sec-ans" type="text"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-gold" onclick="saveSecurity()">حفظ</button>
       <button class="btn btn-dark" data-close-modal>إلغاء</button>
     </div>
   </div>
@@ -84,9 +106,32 @@ async function addUser() {
       username: $('#u-user').value.trim(),
       password: $('#u-pass').value,
       role: $('#u-role').value,
+      security_question: $('#u-q').value.trim(),
+      security_answer: $('#u-ans').value.trim(),
     }});
     closeModal('addModal');
     toast('تمت إضافة المستخدم');
+    setTimeout(() => location.reload(), 800);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function setSecurity(id, username, question) {
+  $('#sec-title').textContent = `سؤال الأمان لـ ${username}`;
+  $('#sec-id').value = id;
+  $('#sec-q').value = question || '';
+  $('#sec-ans').value = '';
+  openModal('secModal');
+}
+
+async function saveSecurity() {
+  const q = $('#sec-q').value.trim();
+  const a = $('#sec-ans').value.trim();
+  if (!q) return toast('اكتب سؤال الأمان', 'err');
+  if (!a) return toast('اكتب إجابة سؤال الأمان', 'err');
+  try {
+    await api(`/api/users/${$('#sec-id').value}/security`, { method: 'POST', body: { security_question: q, security_answer: a } });
+    closeModal('secModal');
+    toast('تم حفظ سؤال الأمان');
     setTimeout(() => location.reload(), 800);
   } catch (e) { toast(e.message, 'err'); }
 }

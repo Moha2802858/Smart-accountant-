@@ -629,6 +629,58 @@ check("القيد المضافة اختفت بعد الاستعادة", not afte
 r = s.get(BASE + "/api/accounts")
 check("النظام يعمل طبيعي بعد الاستعادة", r.status_code == 200)
 
+print("== سؤال الأمان ونسيت كلمة المرور ==")
+anon2 = requests.Session()
+r = anon2.get(BASE + "/forgot")
+check("صفحة /forgot تفتح بدون دخول", r.status_code == 200 and "استعادة كلمة المرور" in r.text, str(r.status_code))
+r = anon2.post(BASE + "/forgot", data={"username": "ghost"})
+check("/forgot يرفض مستخدم غير موجود", r.status_code == 200 and "لا يوجد مستخدم" in r.text, r.text[:120])
+r = anon2.post(BASE + "/forgot", data={"username": "viewer"})
+check("/forgot: حساب بلا سؤال أمان يطلب التواصل مع المدير", r.status_code == 200 and "مدير النظام" in r.text, r.text[:120])
+r = s.post(BASE + "/api/users/1/security",
+           json={"security_question": "اسم مدرستك الثانوية؟", "security_answer": "السلام"})
+check("تعيين سؤال أمان لأدمن", r.status_code == 200 and r.json().get("ok"), r.text[:150])
+r = anon2.post(BASE + "/forgot", data={"username": "admin"})
+check("عرض سؤال الأمان بعد كتابة الاسم", r.status_code == 200 and "اسم مدرستك الثانوية؟" in r.text, r.text[:150])
+r = anon2.post(BASE + "/forgot", data={"act": "setup", "username": "admin",
+                                       "answer": "غلط", "new_password": "TempPass123"})
+check("رفض إجابة سؤال الأمان الخاطئة", r.status_code == 200 and "غير صحيحة" in r.text, r.text[:150])
+r = anon2.post(BASE + "/forgot", data={"act": "setup", "username": "admin",
+                                       "answer": "السلام", "new_password": "short"})
+check("رفض كلمة المرور القصيرة في forgot", r.status_code == 200 and "8 أحرف" in r.text, r.text[:150])
+r = anon2.post(BASE + "/forgot", data={"act": "setup", "username": "admin",
+                                       "answer": "السلام", "new_password": "Restore123"})
+check("تغيير كلمة المرور عبر سؤال الأمان", r.status_code == 200 and "بنجاح" in r.text, r.text[:150])
+r = requests.post(BASE + "/login", data={"username": "admin", "password": "Restore123"}, allow_redirects=False)
+check("الدخول بكلمة المرور الجديدة", r.status_code == 302, str(r.status_code))
+r = requests.post(BASE + "/login", data={"username": "admin", "password": "admin123"}, allow_redirects=False)
+check("رفض كلمة المرور القديمة بعد التغيير", "غير صحيحة" in r.text, r.text[:150])
+# إعادة كلمة المرور الأصلية عبر سؤال الأمان مرة أخرى لاستمرار بقية الاختبارات
+r = anon2.post(BASE + "/forgot", data={"act": "setup", "username": "admin",
+                                       "answer": "السلام", "new_password": "admin123"})
+r = requests.post(BASE + "/login", data={"username": "admin", "password": "admin123"}, allow_redirects=False)
+check("استرجاع كلمة المرور الأصلية (admin123)", r.status_code == 302, str(r.status_code))
+r = s.get(BASE + "/users")
+check("صفحة المستخدمين تعرض حالة سؤال الأمان", "سؤال أمان" in r.text, str(r.status_code))
+
+print("== الاستعادة من ملف مرفوع ==")
+r = s.get(BASE + f"/api/backups/{requests.utils.quote(target)}")
+check("تحميل نسخة احتياطية حقيقية للاختبار", r.status_code == 200, str(r.status_code))
+sample = r.content
+# تغيير كلمة مرور للدليل (تغيير فعلي في القاعدة الحية)
+r = s.post(BASE + "/api/users/1/password", json={"password": "TempPass123"})
+check("تغيير كلمة مرور (اختبار الاستعادة من ملف)", r.status_code == 200, r.text[:150])
+r = requests.post(BASE + "/login", data={"username": "admin", "password": "TempPass123"}, allow_redirects=False)
+check("كلمة المرور تغيّرت فعلاً", r.status_code == 302, str(r.status_code))
+r = s.post(BASE + "/api/restore-file",
+           files={"file": ("sample.db", io.BytesIO(sample), "application/octet-stream")})
+check("استعادة من ملف مرفوع", r.status_code == 200 and r.json().get("ok"), r.text[:150])
+r = requests.post(BASE + "/login", data={"username": "admin", "password": "admin123"}, allow_redirects=False)
+check("الاستعادة من الملف أرجع كلمة المرور الأصلية", r.status_code == 302, str(r.status_code))
+r = s.post(BASE + "/api/restore-file",
+           files={"file": ("fake.txt", io.BytesIO(b"NOT A SQLITE FILE AT ALL"), "text/plain")})
+check("رفض ملف غير صالح", r.status_code == 400 and "غير صالح" in r.json().get("error", ""), r.text[:150])
+
 print("== مسح الشجرة (دليل الحسابات بالكامل) ==")
 r = sv.post(BASE + "/api/accounts/wipe")
 check("viewer ممنوع من مسح الشجرة", r.status_code == 403)

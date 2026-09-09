@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """قاعدة البيانات SQLite — نظام الحسابات المتكامل"""
+import os
 import re
 import shutil
 import sqlite3
@@ -11,8 +12,11 @@ from pathlib import Path
 from werkzeug.security import generate_password_hash
 
 # في النسخة المجمّعة (EXE) البيانات تُحفظ بجوار الملف التنفيذي وليس داخل مجلد مؤقت
+# المتغير SMARTACCT_DB يتيح لسكربت الترقية معالجة قاعدة موجودة في مجلد آخر
 if getattr(sys, "frozen", False):
     BASE_DIR = Path(sys.executable).parent
+elif os.environ.get("SMARTACCT_DB"):
+    BASE_DIR = Path(os.environ["SMARTACCT_DB"])
 else:
     BASE_DIR = Path(__file__).parent
 INSTANCE_DIR = BASE_DIR / "instance"
@@ -100,6 +104,8 @@ CREATE TABLE IF NOT EXISTS users (
     password_hash TEXT NOT NULL,
     full_name TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'accountant',
+    security_question TEXT DEFAULT '',
+    security_answer_hash TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
@@ -169,29 +175,40 @@ def load_secret():
     return key
 
 
+def migrate():
+    """ترقية قاعدة البيانات بأمان: ينشئ أي جداول/حقول جديدة عند كل تشغيل (لا يمس البيانات)."""
+    INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+    conn = connect()
+    try:
+        def add_cols(table, cols):
+            found = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for colname, coltype, default in cols:
+                if colname not in found:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {colname} {coltype} DEFAULT {default}")
+        has_journal = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='journal_entries'").fetchone()[0]
+        if has_journal:
+            add_cols("journal_entries", [("entry_type", "TEXT", "'عادي'")])
+        has_accounts = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='accounts'").fetchone()[0]
+        if has_accounts:
+            add_cols("accounts", [("budget", "REAL", "0")])
+        has_users = conn.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='users'").fetchone()[0]
+        if has_users:
+            add_cols("users", [("security_question", "TEXT", "''"), ("security_answer_hash", "TEXT", "''")])
+        conn.executescript(SCHEMA)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def init_db():
     INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
     # الزراعة تتم مرة واحدة فقط عند إنشاء ملف القاعدة من الصفر.
-    # أي مسح/حذف لاحق (قيود/حسابات/مستخدمين/مناطق/إعدادات) يبقى نهائيًا
-    # لأن وجود الملف نفسه يمنع إعادة الزرع مهما طُمست البيانات.
     brand_new = not DB_PATH.exists()
-    conn = connect()
-    conn.executescript(SCHEMA)
-
-    # ترقية قواعد البيانات القديمة: إضافة عمود نوع القيد
-    existing_cols = {r["name"] for r in conn.execute("PRAGMA table_info(journal_entries)")}
-    if "entry_type" not in existing_cols:
-        conn.execute("ALTER TABLE journal_entries ADD COLUMN entry_type TEXT DEFAULT 'عادي'")
-        conn.commit()
-
-    # ترقية: إضافة عمود الميزانية التقديرية للحسابات
-    acc_cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)")}
-    if "budget" not in acc_cols:
-        conn.execute("ALTER TABLE accounts ADD COLUMN budget REAL NOT NULL DEFAULT 0")
-        conn.commit()
+    migrate()
 
     # أول تشغيل فقط: زراعة كاملة للافتراضيات (مستخدمين/دليل حسابات/إعدادات/مناطق).
     if brand_new:
+        conn = connect()
         # المستخدمون الافتراضيون
         default_users = [
             ("admin", "admin123", "مدير النظام", "admin"),
@@ -247,8 +264,8 @@ def init_db():
         for region_name in DEFAULT_REGIONS:
             conn.execute("INSERT OR IGNORE INTO regions (name) VALUES (?)", (region_name,))
 
-    conn.commit()
-    conn.close()
+        conn.commit()
+        conn.close()
     load_regions()
 
 

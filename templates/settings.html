@@ -39,6 +39,8 @@
   <div class="panel">
     <div class="panel-head"><h3>🗄️ النسخ الاحتياطية</h3>
       <button class="btn btn-gold btn-sm" onclick="doBackup()">⬇️ نسخة احتياطية الآن</button>
+      <button class="btn btn-teal btn-sm" onclick="document.getElementById('restore-file').click()">⬆️ استعادة من ملف</button>
+      <input type="file" id="restore-file" accept=".db" style="display:none" onchange="restoreFromFile(this)">
     </div>
     <div class="panel-body">
       <div class="alert ok" style="font-size:12.5px">
@@ -46,6 +48,8 @@
         الملفات محفوظة على جهاز السيرفر داخل مجلد <b>instance\backups</b>
         <br>🔄 زر «استعادة» يسوي نسخة أمان تلقائية للوضع الحالي أولاً، ثم يصدّر
         بيانات النسخة المختارة محل قاعدة البيانات الجارية.
+        <br>⬆️ زر «استعادة من ملف» بيستعيد من ملف .db اختارته من عندك على الجهاز
+        (بيتأكّد إنه ملف قاعدة بيانات صحيح قبل ما يستعمله).
       </div>
       <div class="tbl-wrap">
         <table class="tbl">
@@ -159,6 +163,22 @@ async function restoreBackup(name) {
     const d = await api('/api/restore/' + encodeURIComponent(name), { method: 'POST' });
     toast(d.message || 'تمت الاستعادة ✔');
     setTimeout(() => location.reload(), 1200);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+async function restoreFromFile(input) {
+  const file = input.files[0];
+  input.value = '';
+  if (!file) return;
+  if (!await confirmDlg('استعادة النسخة من الملف «' + file.name + '»؟\nستُسوى نسخة أمان تلقائية للوضع الحالي قبل الاستعادة، ثم تُسيقاد بيانات الملف المختار. متابعة؟')) return;
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const res = await fetch('/api/restore-file', { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'حدث خطأ غير متوقع');
+    toast(data.message || 'تمت الاستعادة ✔');
+    setTimeout(() => location.reload(), 1800);
   } catch (e) { toast(e.message, 'err'); }
 }
 
