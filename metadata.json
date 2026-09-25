@@ -1,0 +1,8 @@
+{
+  "name": "Smart Accounting",
+  "description": "نظام الحسابات المتكامل — قيود اليومية، الأستاذ العام، ميزان المراجعة، القوائم المالية وشجرة الحسابات",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
